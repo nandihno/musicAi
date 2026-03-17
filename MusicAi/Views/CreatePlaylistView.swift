@@ -185,7 +185,8 @@ struct CreatePlaylistView: View {
             statusMessage = "\u{1F916} Asking Claude\u{2026}"
             let generatedSongs = try await claudeService.generatePlaylist(
                 theme: theme,
-                apiKey: settings.apiKey
+                apiKey: settings.apiKey,
+                model: settings.selectedModel
             )
             songs = generatedSongs
 

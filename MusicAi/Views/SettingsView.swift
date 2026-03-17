@@ -19,6 +19,19 @@ struct SettingsView: View {
                 } footer: {
                     Text("Your key is stored locally on this device.")
                 }
+
+                Section {
+                    Picker("Model", selection: $settings.selectedModel) {
+                        ForEach(ClaudeModel.allCases, id: \.self) { model in
+                            Text(model.displayName).tag(model)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("Claude Model")
+                } footer: {
+                    Text("Sonnet is more creative. Haiku is faster and cheaper.")
+                }
             }
             .navigationTitle("Settings")
             .toolbar {

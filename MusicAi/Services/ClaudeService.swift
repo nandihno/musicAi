@@ -21,7 +21,7 @@ actor ClaudeService {
         }
     }
 
-    func generatePlaylist(theme: String, apiKey: String) async throws -> [SongItem] {
+    func generatePlaylist(theme: String, apiKey: String, model: ClaudeModel) async throws -> [SongItem] {
         guard !apiKey.isEmpty else {
             throw ClaudeError.missingAPIKey
         }
@@ -63,7 +63,7 @@ actor ClaudeService {
         """
 
         let requestBody: [String: Any] = [
-            "model": "claude-sonnet-4-6",
+            "model": model.rawValue,
             "max_tokens": 2048,
             "system": systemPrompt,
             "messages": [

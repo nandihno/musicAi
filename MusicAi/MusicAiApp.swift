@@ -1,17 +1,13 @@
-//
-//  MusicAiApp.swift
-//  MusicAi
-//
-//  Created by Fernando De Leon on 17/3/2026.
-//
-
 import SwiftUI
 
 @main
 struct MusicAiApp: App {
+    @State private var settings = SettingsManager()
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(settings)
         }
     }
 }

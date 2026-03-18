@@ -68,6 +68,28 @@ actor MusicKitService {
         return resolved
     }
 
+    func fetchUserPlaylists() async throws -> [Playlist] {
+        try await requestAuthorization()
+        var request = MusicLibraryRequest<Playlist>()
+        request.sort(by: \.lastPlayedDate, ascending: false)
+        let response = try await request.response()
+        return Array(response.items)
+    }
+
+    func fetchSongs(from playlist: Playlist) async throws -> [Song] {
+        let detailed = try await playlist.with([.tracks])
+        guard let tracks = detailed.tracks else { return [] }
+        var songs: [Song] = []
+        for track in tracks {
+            if case let .song(song) = track {
+                // Fetch additional properties for metadata
+                let enriched = try await song.with([.genres])
+                songs.append(enriched)
+            }
+        }
+        return songs
+    }
+
     private func searchSong(title: String, artist: String) async throws -> Song? {
         var request = MusicCatalogSearchRequest(
             term: "\(title) \(artist)",

@@ -25,6 +25,7 @@ struct MashUpView: View {
                     playlistList
                 }
             }
+            .appBackground()
             .navigationTitle("Mash Up")
             .task { await loadPlaylists() }
             .refreshable { await loadPlaylists() }
@@ -66,13 +67,15 @@ struct MashUpView: View {
                             }
                     }
                     Text(playlist.name)
-                        .font(.body.weight(.medium))
+                        .font(.body.weight(.semibold))
                         .lineLimit(1)
                 }
                 .padding(.vertical, 4)
             }
+            .listRowBackground(Theme.gradientStart.opacity(0.06))
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .navigationDestination(for: Playlist.self) { playlist in
             PlaylistSongsView(playlist: playlist)
         }
@@ -115,6 +118,7 @@ struct PlaylistSongsView: View {
                 songList
             }
         }
+        .appBackground()
         .navigationTitle(playlist.name)
         .task { await loadSongs() }
         .sheet(item: $selectedSong) { song in
@@ -157,8 +161,10 @@ struct PlaylistSongsView: View {
                 .padding(.vertical, 2)
             }
             .tint(.primary)
+            .listRowBackground(Theme.gradientStart.opacity(0.06))
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
     private func loadSongs() async {
@@ -189,6 +195,7 @@ struct SongDetailSheet: View {
     @State private var successPlaylistName: String?
 
     private let claudeService = ClaudeService()
+    private let foundationModelsService = FoundationModelsService()
     private let musicKitService = MusicKitService()
 
     private var metadata: SongMetadata { SongMetadata(from: song) }
@@ -206,6 +213,7 @@ struct SongDetailSheet: View {
                 }
                 .padding()
             }
+            .appBackground()
             .navigationTitle("Seed Song")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -276,11 +284,12 @@ struct SongDetailSheet: View {
             Image(systemName: icon)
                 .font(.caption2)
             Text(text)
-                .font(.caption.weight(.medium))
+                .font(.caption.weight(.bold))
         }
+        .foregroundStyle(.white)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(.ultraThinMaterial)
+        .background(Theme.accentGradient)
         .clipShape(Capsule())
     }
 
@@ -293,10 +302,12 @@ struct SongDetailSheet: View {
             HStack {
                 Image(systemName: "wand.and.stars")
                 Text("Generate from this song")
+                    .fontWeight(.semibold)
             }
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
+        .tint(Theme.gradientStart)
         .disabled(isGenerating)
     }
 
@@ -326,10 +337,13 @@ struct SongDetailSheet: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                 Text(errorMessage)
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.medium))
                     .foregroundStyle(.red)
             }
+            .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.red.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 
@@ -342,14 +356,14 @@ struct SongDetailSheet: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 Text("Added to Apple Music")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.subheadline.weight(.bold))
                 Text(name)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.green.opacity(0.1))
+            .background(.green.opacity(0.15))
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
@@ -362,10 +376,11 @@ struct SongDetailSheet: View {
             VStack(alignment: .leading, spacing: 8) {
                 let matched = generatedSongs.count - unmatchedSongIDs.count
                 Text("\(matched)/\(generatedSongs.count) matched")
-                    .font(.caption.weight(.semibold))
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(.tint.opacity(0.15))
+                    .background(Theme.accentGradient)
                     .clipShape(Capsule())
 
                 LazyVStack(spacing: 0) {
@@ -404,13 +419,19 @@ struct SongDetailSheet: View {
                 return
             }
 
-            statusMessage = "Asking Claude..."
             let context = metadata.claudeContext()
-            let songs = try await claudeService.generateFromSeed(
-                context: context,
-                apiKey: settings.apiKey,
-                model: settings.selectedModel
-            )
+            let songs: [SongItem]
+            if settings.useAppleIntelligence {
+                statusMessage = "Asking Apple Intelligence..."
+                songs = try await foundationModelsService.generateFromSeed(context: context)
+            } else {
+                statusMessage = "Asking Claude..."
+                songs = try await claudeService.generateFromSeed(
+                    context: context,
+                    apiKey: settings.apiKey,
+                    model: settings.selectedModel
+                )
+            }
             generatedSongs = songs
 
             statusMessage = "Searching Apple Music..."

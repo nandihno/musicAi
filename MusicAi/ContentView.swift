@@ -11,5 +11,6 @@ struct ContentView: View {
                 MashUpView()
             }
         }
+        .tint(Theme.gradientStart)
     }
 }

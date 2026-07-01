@@ -15,6 +15,7 @@ struct CreatePlaylistView: View {
     @State private var unmatchedSongIDs: Set<String> = []
 
     private let claudeService = ClaudeService()
+    private let foundationModelsService = FoundationModelsService()
     private let musicKitService = MusicKitService()
 
     var body: some View {
@@ -29,6 +30,7 @@ struct CreatePlaylistView: View {
                 }
                 .padding()
             }
+            .appBackground()
             .navigationTitle("Create Playlist")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -50,7 +52,7 @@ struct CreatePlaylistView: View {
     private var promptSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("What kind of music?")
-                .font(.headline)
+                .font(.title3.weight(.bold))
 
             TextField(
                 "e.g. tropical cumbia jazz",
@@ -67,23 +69,27 @@ struct CreatePlaylistView: View {
                     HStack {
                         Image(systemName: "sparkles")
                         Text("Generate Playlist")
+                            .fontWeight(.semibold)
                     }
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(Theme.gradientStart)
                 .disabled(theme.trimmingCharacters(in: .whitespaces).isEmpty || isGenerating)
 
                 if !songs.isEmpty {
                     let matched = songs.count - unmatchedSongIDs.count
                     Text("\(matched)/\(songs.count) matched")
-                        .font(.caption.weight(.semibold))
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .background(.tint.opacity(0.15))
+                        .background(Theme.accentGradient)
                         .clipShape(Capsule())
                 }
             }
         }
+        .cardBackground()
     }
 
     // MARK: - Status
@@ -112,10 +118,13 @@ struct CreatePlaylistView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                 Text(errorMessage)
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.medium))
                     .foregroundStyle(.red)
             }
+            .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.red.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 
@@ -128,14 +137,14 @@ struct CreatePlaylistView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 Text("Added to Apple Music")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.subheadline.weight(.bold))
                 Text(name)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.green.opacity(0.1))
+            .background(.green.opacity(0.15))
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
@@ -181,13 +190,19 @@ struct CreatePlaylistView: View {
                 return
             }
 
-            // Step 1: Ask Claude
-            statusMessage = "\u{1F916} Asking Claude\u{2026}"
-            let generatedSongs = try await claudeService.generatePlaylist(
-                theme: theme,
-                apiKey: settings.apiKey,
-                model: settings.selectedModel
-            )
+            // Step 1: Ask Claude or Apple Intelligence
+            let generatedSongs: [SongItem]
+            if settings.useAppleIntelligence {
+                statusMessage = "\u{1F34E} Asking Apple Intelligence\u{2026}"
+                generatedSongs = try await foundationModelsService.generatePlaylist(theme: theme)
+            } else {
+                statusMessage = "\u{1F916} Asking Claude\u{2026}"
+                generatedSongs = try await claudeService.generatePlaylist(
+                    theme: theme,
+                    apiKey: settings.apiKey,
+                    model: settings.selectedModel
+                )
+            }
             songs = generatedSongs
 
             // Step 2: Search Apple Music & create playlist

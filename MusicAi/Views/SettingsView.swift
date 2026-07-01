@@ -10,6 +10,19 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    Toggle("Use Apple Intelligence", isOn: $settings.useAppleIntelligence)
+                } header: {
+                    Text("On-Device AI")
+                } footer: {
+                    if settings.useAppleIntelligence, let reason = FoundationModelsService.unavailabilityReason() {
+                        Label(reason, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Generates playlists entirely on your device with Apple Intelligence — no API key or network needed, but with less music knowledge than Claude.")
+                    }
+                }
+
+                Section {
                     SecureField("sk-ant-...", text: $settings.apiKey)
                         .textContentType(.password)
                         .autocorrectionDisabled()
@@ -19,6 +32,8 @@ struct SettingsView: View {
                 } footer: {
                     Text("Your key is stored locally on this device.")
                 }
+                .disabled(settings.useAppleIntelligence)
+                .opacity(settings.useAppleIntelligence ? 0.4 : 1)
 
                 Section {
                     Picker("Model", selection: $settings.selectedModel) {
@@ -32,7 +47,11 @@ struct SettingsView: View {
                 } footer: {
                     Text("Sonnet is more creative. Haiku is faster and cheaper.")
                 }
+                .disabled(settings.useAppleIntelligence)
+                .opacity(settings.useAppleIntelligence ? 0.4 : 1)
             }
+            .scrollContentBackground(.hidden)
+            .appBackground()
             .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

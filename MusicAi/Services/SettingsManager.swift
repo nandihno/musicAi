@@ -26,9 +26,16 @@ final class SettingsManager {
         }
     }
 
+    var useAppleIntelligence: Bool {
+        didSet {
+            UserDefaults.standard.set(useAppleIntelligence, forKey: "use_apple_intelligence")
+        }
+    }
+
     init() {
         self.apiKey = UserDefaults.standard.string(forKey: "claude_api_key") ?? ""
         let savedModel = UserDefaults.standard.string(forKey: "claude_model") ?? ""
         self.selectedModel = ClaudeModel(rawValue: savedModel) ?? .sonnet
+        self.useAppleIntelligence = UserDefaults.standard.bool(forKey: "use_apple_intelligence")
     }
 }

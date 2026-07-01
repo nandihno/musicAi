@@ -63,13 +63,17 @@ struct SongRowView: View {
             Spacer()
 
             Text(song.genre)
-                .font(.caption2.weight(.medium))
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(.ultraThinMaterial)
+                .background(Theme.accentGradient)
                 .clipShape(Capsule())
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(Theme.gradientStart.opacity(isUnmatched ? 0.04 : 0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
         .opacity(isUnmatched ? 0.6 : 1)
     }
 }

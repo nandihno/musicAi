@@ -30,7 +30,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Claude API Key")
                 } footer: {
-                    Text("Your key is stored locally on this device.")
+                    Text("Your key is stored securely in this device's Keychain.")
                 }
                 .disabled(settings.useAppleIntelligence)
                 .opacity(settings.useAppleIntelligence ? 0.4 : 1)
@@ -59,5 +59,35 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Toolbar Button
+
+/// Adds a gear button that presents Settings, so every tab can reach it.
+private struct SettingsToolbar: ViewModifier {
+    @State private var showSettings = false
+
+    func body(content: Content) -> some View {
+        content
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Settings")
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+            }
+    }
+}
+
+extension View {
+    func settingsToolbar() -> some View {
+        modifier(SettingsToolbar())
     }
 }

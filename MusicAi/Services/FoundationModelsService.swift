@@ -2,13 +2,14 @@ import Foundation
 import FoundationModels
 
 @Generable
-struct GeneratedPlaylist {
-    @Guide(description: "Exactly 15 real songs that authentically exist on Apple Music", .count(15))
+nonisolated struct GeneratedPlaylist {
+    // The exact count is requested in the prompt; the guide caps runaway output.
+    @Guide(description: "Real songs that authentically exist on Apple Music", .maximumCount(40))
     var songs: [GeneratedSong]
 }
 
 @Generable
-struct GeneratedSong {
+nonisolated struct GeneratedSong {
     @Guide(description: "Song title")
     var title: String
     @Guide(description: "Artist name")
@@ -21,19 +22,7 @@ struct GeneratedSong {
     var reason: String
 }
 
-extension SongItem {
-    init(_ generated: GeneratedSong) {
-        self.init(
-            title: generated.title,
-            artist: generated.artist,
-            album: generated.album,
-            genre: generated.genre,
-            reason: generated.reason
-        )
-    }
-}
-
-actor FoundationModelsService {
+nonisolated struct FoundationModelsService: PlaylistProvider {
     enum FMError: LocalizedError {
         case unavailable(String)
         case generationFailed(String)
@@ -45,6 +34,8 @@ actor FoundationModelsService {
             }
         }
     }
+
+    var displayName: String { "Apple Intelligence" }
 
     /// Returns a human-readable reason if unavailable, or nil if ready to use.
     static func unavailabilityReason() -> String? {
@@ -62,62 +53,101 @@ actor FoundationModelsService {
         }
     }
 
-    func generatePlaylist(theme: String) async throws -> [SongItem] {
-        if let reason = Self.unavailabilityReason() {
-            throw FMError.unavailable(reason)
-        }
-
-        let session = LanguageModelSession {
-            """
-            You are a world-class music curator with deep knowledge of global \
-            music genres, cross-cultural fusions, and music history. Given a \
-            musical theme or fusion concept, generate a playlist of exactly \
-            15 real songs that authentically represent that theme. Every song \
-            must genuinely exist on Apple Music. DO NOT invent songs. \
-            Never repeat the same artist more than twice. Vary the era, mixing \
-            classic and contemporary picks.
-            """
-        }
-
-        do {
-            let response = try await session.respond(
-                to: "Musical theme: \(theme)",
-                generating: GeneratedPlaylist.self
-            )
-            return response.content.songs.map(SongItem.init)
-        } catch let error as FMError {
-            throw error
-        } catch {
-            throw FMError.generationFailed(error.localizedDescription)
+    func streamSongs(
+        for prompt: PlaylistPrompt,
+        count: Int,
+        excluding: [SongItem]
+    ) -> AsyncThrowingStream<SongItem, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    try await stream(prompt: prompt, count: count, excluding: excluding) {
+                        continuation.yield($0)
+                    }
+                    continuation.finish()
+                } catch let error as FMError {
+                    continuation.finish(throwing: error)
+                } catch is CancellationError {
+                    continuation.finish(throwing: CancellationError())
+                } catch {
+                    continuation.finish(throwing: FMError.generationFailed(error.localizedDescription))
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
-    func generateFromSeed(context: String) async throws -> [SongItem] {
+    private func stream(
+        prompt: PlaylistPrompt,
+        count: Int,
+        excluding: [SongItem],
+        onSong: (SongItem) -> Void
+    ) async throws {
         if let reason = Self.unavailabilityReason() {
             throw FMError.unavailable(reason)
         }
 
-        let session = LanguageModelSession {
-            """
-            You are a world-class music curator. The user will describe a seed \
-            song from their library. Generate a playlist of 15 songs that \
-            share a similar genre, mood, or musical energy, would feel natural \
-            alongside the seed song, and genuinely exist on Apple Music. \
-            DO NOT include the seed song itself. Never repeat the same artist \
-            more than twice.
-            """
+        let session = LanguageModelSession(instructions: instructions(for: prompt))
+        let responseStream = session.streamResponse(
+            to: prompt.userMessage(count: count, excluding: excluding),
+            generating: GeneratedPlaylist.self
+        )
+
+        // Each snapshot holds the whole playlist so far. A song is complete once
+        // the model has moved on to the next one; the last is flushed at the end.
+        var emitted = 0
+        var latest: [GeneratedSong.PartiallyGenerated] = []
+
+        for try await snapshot in responseStream {
+            latest = snapshot.content.songs ?? []
+            while emitted < latest.count - 1 {
+                if let song = SongItem(latest[emitted]) { onSong(song) }
+                emitted += 1
+            }
         }
 
-        do {
-            let response = try await session.respond(
-                to: context,
-                generating: GeneratedPlaylist.self
-            )
-            return response.content.songs.map(SongItem.init)
-        } catch let error as FMError {
-            throw error
-        } catch {
-            throw FMError.generationFailed(error.localizedDescription)
+        while emitted < latest.count {
+            if let song = SongItem(latest[emitted]) { onSong(song) }
+            emitted += 1
         }
+    }
+
+    private func instructions(for prompt: PlaylistPrompt) -> String {
+        switch prompt {
+        case .theme:
+            """
+            You are a world-class music curator with deep knowledge of global \
+            music genres, cross-cultural fusions, and music history. Given a \
+            musical theme or fusion concept, generate a playlist of real songs \
+            that authentically represent that theme. Every song must genuinely \
+            exist on Apple Music. DO NOT invent songs. Never repeat the same \
+            artist more than twice. Vary the era, mixing classic and contemporary picks.
+            """
+        case .seed:
+            """
+            You are a world-class music curator. The user will describe a seed \
+            song from their library. Generate a playlist of songs that share a \
+            similar genre, mood, or musical energy, would feel natural alongside \
+            the seed song, and genuinely exist on Apple Music. DO NOT include the \
+            seed song itself. Never repeat the same artist more than twice.
+            """
+        }
+    }
+}
+
+extension SongItem {
+    /// Nil until the model has produced at least a title and artist.
+    nonisolated init?(_ partial: GeneratedSong.PartiallyGenerated) {
+        guard let title = partial.title, !title.isEmpty,
+              let artist = partial.artist, !artist.isEmpty else {
+            return nil
+        }
+        self.init(
+            title: title,
+            artist: artist,
+            album: partial.album ?? "",
+            genre: partial.genre ?? "",
+            reason: partial.reason ?? ""
+        )
     }
 }

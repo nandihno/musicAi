@@ -13,8 +13,20 @@ struct MashUpView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if isLoadingPlaylists {
+                if isLoadingPlaylists && playlists.isEmpty {
                     ProgressView("Loading playlists...")
+                } else if let errorMessage, playlists.isEmpty {
+                    ContentUnavailableView {
+                        Label("Couldn't Load Playlists", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(errorMessage)
+                    } actions: {
+                        Button("Try Again") {
+                            Task { await loadPlaylists() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.gradientStart)
+                    }
                 } else if playlists.isEmpty {
                     ContentUnavailableView(
                         "No Playlists",
@@ -27,24 +39,16 @@ struct MashUpView: View {
             }
             .appBackground()
             .navigationTitle("Mash Up")
+            .settingsToolbar()
             .task { await loadPlaylists() }
             .refreshable { await loadPlaylists() }
-            .overlay {
-                if let errorMessage {
-                    VStack {
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.red)
-                            Text(errorMessage)
-                                .font(.subheadline)
-                                .foregroundStyle(.red)
-                        }
-                        .padding()
-                        .background(.red.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        Spacer()
+            .safeAreaInset(edge: .top) {
+                // A refresh failure while playlists are already showing.
+                if let errorMessage, !playlists.isEmpty {
+                    ErrorBanner(message: errorMessage) {
+                        Task { await loadPlaylists() }
                     }
-                    .padding()
+                    .padding(.horizontal)
                 }
             }
         }
@@ -71,6 +75,8 @@ struct MashUpView: View {
                         .lineLimit(1)
                 }
                 .padding(.vertical, 4)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(playlist.name)
             }
             .listRowBackground(Theme.gradientStart.opacity(0.06))
         }
@@ -100,6 +106,7 @@ struct PlaylistSongsView: View {
 
     @State private var songs: [Song] = []
     @State private var isLoading = true
+    @State private var errorMessage: String?
     @State private var selectedSong: Song?
 
     private let musicKitService = MusicKitService()
@@ -108,6 +115,18 @@ struct PlaylistSongsView: View {
         Group {
             if isLoading {
                 ProgressView("Loading songs...")
+            } else if let errorMessage {
+                ContentUnavailableView {
+                    Label("Couldn't Load Songs", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(errorMessage)
+                } actions: {
+                    Button("Try Again") {
+                        Task { await loadSongs() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.gradientStart)
+                }
             } else if songs.isEmpty {
                 ContentUnavailableView(
                     "No Songs",
@@ -159,7 +178,10 @@ struct PlaylistSongsView: View {
                         .foregroundStyle(.tertiary)
                 }
                 .padding(.vertical, 2)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(song.title) by \(song.artistName)")
             }
+            .accessibilityHint("Opens options to generate a playlist from this song")
             .tint(.primary)
             .listRowBackground(Theme.gradientStart.opacity(0.06))
         }
@@ -169,10 +191,12 @@ struct PlaylistSongsView: View {
 
     private func loadSongs() async {
         isLoading = true
+        errorMessage = nil
         do {
             songs = try await musicKitService.fetchSongs(from: playlist)
         } catch {
             songs = []
+            errorMessage = error.localizedDescription
         }
         isLoading = false
     }
@@ -186,33 +210,27 @@ struct SongDetailSheet: View {
 
     let song: Song
 
-    @State private var isGenerating = false
-    @State private var generatedSongs: [SongItem] = []
-    @State private var artworks: [String: Artwork] = [:]
-    @State private var unmatchedSongIDs: Set<String> = []
-    @State private var statusMessage = ""
-    @State private var errorMessage: String?
-    @State private var successPlaylistName: String?
+    @State private var generator = PlaylistGenerator()
+    @State private var previewPlayer = PreviewPlayer()
+    @State private var metadata: SongMetadata
 
-    private let claudeService = ClaudeService()
-    private let foundationModelsService = FoundationModelsService()
-    private let musicKitService = MusicKitService()
-
-    private var metadata: SongMetadata { SongMetadata(from: song) }
+    init(song: Song) {
+        self.song = song
+        _metadata = State(initialValue: SongMetadata(from: song))
+    }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    songInfoSection
-                    generateButton
-                    statusSection
-                    errorSection
-                    successBanner
-                    songListSection
-                }
-                .padding()
+            List {
+                songInfoSection
+                    .cardRow()
+                generateSection
+                    .cardRow()
+                GenerationFeedbackRows(generator: generator)
+                GeneratedPlaylistSection(generator: generator, previewPlayer: previewPlayer)
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .appBackground()
             .navigationTitle("Seed Song")
             .navigationBarTitleDisplayMode(.inline)
@@ -220,6 +238,17 @@ struct SongDetailSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
+                if generator.canEdit {
+                    ToolbarItem(placement: .primaryAction) {
+                        EditButton()
+                    }
+                }
+            }
+            .generatorFeedback(generator)
+            // Closing the sheet mid-run shouldn't leave work running in the background.
+            .onDisappear {
+                generator.cancel()
+                previewPlayer.stop()
             }
         }
     }
@@ -232,6 +261,7 @@ struct SongDetailSheet: View {
                 ArtworkImage(artwork, width: 200, height: 200)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .shadow(radius: 8, y: 4)
+                    .accessibilityHidden(true)
             }
 
             VStack(spacing: 4) {
@@ -250,6 +280,7 @@ struct SongDetailSheet: View {
 
             metadataBadges
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var metadataBadges: some View {
@@ -258,9 +289,7 @@ struct SongDetailSheet: View {
         let playCountText: String? = meta.playCount.flatMap { $0 > 0 ? "\($0) plays" : nil }
         let yearText: String? = meta.releaseDate.map { "\(Calendar.current.component(.year, from: $0))" }
         let lastPlayedText: String? = meta.lastPlayedDate.map {
-            let formatter = RelativeDateTimeFormatter()
-            formatter.unitsStyle = .abbreviated
-            return "Last: \(formatter.localizedString(for: $0, relativeTo: Date()))"
+            "Last: \($0.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)))"
         }
 
         return FlowLayout(spacing: 8) {
@@ -293,216 +322,33 @@ struct SongDetailSheet: View {
         .clipShape(Capsule())
     }
 
-    // MARK: - Generate Button
-
-    private var generateButton: some View {
-        Button {
-            Task { await generateFromSeed() }
-        } label: {
-            HStack {
-                Image(systemName: "wand.and.stars")
-                Text("Generate from this song")
-                    .fontWeight(.semibold)
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(Theme.gradientStart)
-        .disabled(isGenerating)
-    }
-
-    // MARK: - Status
-
-    @ViewBuilder
-    private var statusSection: some View {
-        if isGenerating {
-            HStack(spacing: 8) {
-                ProgressView()
-                Text(statusMessage)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .contentTransition(.numericText())
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .animation(.default, value: statusMessage)
-        }
-    }
-
-    // MARK: - Error
-
-    @ViewBuilder
-    private var errorSection: some View {
-        if let errorMessage {
-            HStack {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                Text(errorMessage)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.red)
-            }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.red.opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-    }
-
-    // MARK: - Success Banner
-
-    @ViewBuilder
-    private var successBanner: some View {
-        if let name = successPlaylistName {
-            HStack {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text("Added to Apple Music")
-                    .font(.subheadline.weight(.bold))
-                Text(name)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.green.opacity(0.15))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-    }
-
-    // MARK: - Song List
-
-    @ViewBuilder
-    private var songListSection: some View {
-        if !generatedSongs.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                let matched = generatedSongs.count - unmatchedSongIDs.count
-                Text("\(matched)/\(generatedSongs.count) matched")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Theme.accentGradient)
-                    .clipShape(Capsule())
-
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(generatedSongs.enumerated()), id: \.element.id) { index, song in
-                        SongRowView(
-                            index: index,
-                            song: song,
-                            artwork: artworks[song.id],
-                            isUnmatched: unmatchedSongIDs.contains(song.id)
-                        )
-                        if index < generatedSongs.count - 1 {
-                            Divider()
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // MARK: - Generate
 
-    private func generateFromSeed() async {
-        errorMessage = nil
-        successPlaylistName = nil
-        generatedSongs = []
-        artworks = [:]
-        unmatchedSongIDs = []
-        isGenerating = true
+    private var generateSection: some View {
+        @Bindable var settings = settings
 
-        defer { isGenerating = false }
-
-        do {
-            let authStatus = await MusicAuthorization.request()
-            guard authStatus == .authorized else {
-                errorMessage = "Music access not authorized. Please allow access in Settings."
-                return
+        return VStack(spacing: 8) {
+            HStack {
+                Text("Playlist length")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                SongCountPicker(count: $settings.songCount)
+                    .disabled(generator.isBusy)
             }
 
-            let context = metadata.claudeContext()
-            let songs: [SongItem]
-            if settings.useAppleIntelligence {
-                statusMessage = "Asking Apple Intelligence..."
-                songs = try await foundationModelsService.generateFromSeed(context: context)
-            } else {
-                statusMessage = "Asking Claude..."
-                songs = try await claudeService.generateFromSeed(
-                    context: context,
-                    apiKey: settings.apiKey,
-                    model: settings.selectedModel
-                )
-            }
-            generatedSongs = songs
-
-            statusMessage = "Searching Apple Music..."
-            let seedTitle = song.title
-            let playlistName = try await musicKitService.resolveAndCreatePlaylist(
-                songs: songs,
-                theme: "Inspired by \(seedTitle)",
-                onSongResolved: { @MainActor index, found, artwork in
-                    let songID = songs[index].id
-                    if found {
-                        if let artwork {
-                            artworks[songID] = artwork
-                        }
-                    } else {
-                        unmatchedSongIDs.insert(songID)
-                    }
-                    if index == songs.count - 1 {
-                        statusMessage = "Creating your playlist..."
-                    }
-                }
+            GenerateButton(
+                title: generator.hasResults ? "Generate Again" : "Generate from this song",
+                systemImage: "wand.and.stars",
+                isGenerating: generator.activity == .generating,
+                isDisabled: generator.isBusy,
+                generate: startGeneration,
+                cancel: generator.cancel
             )
-
-            successPlaylistName = playlistName
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-}
-
-// MARK: - Flow Layout
-
-struct FlowLayout: Layout {
-    var spacing: CGFloat = 8
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let result = arrange(proposal: proposal, subviews: subviews)
-        return result.size
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let result = arrange(proposal: proposal, subviews: subviews)
-        for (index, subview) in subviews.enumerated() {
-            let point = CGPoint(
-                x: bounds.minX + result.positions[index].x,
-                y: bounds.minY + result.positions[index].y
-            )
-            subview.place(at: point, anchor: .topLeading, proposal: .unspecified)
         }
     }
 
-    private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> (positions: [CGPoint], size: CGSize) {
-        let maxWidth = proposal.width ?? .infinity
-        var positions: [CGPoint] = []
-        var x: CGFloat = 0
-        var y: CGFloat = 0
-        var rowHeight: CGFloat = 0
-        var maxX: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x + size.width > maxWidth, x > 0 {
-                x = 0
-                y += rowHeight + spacing
-                rowHeight = 0
-            }
-            positions.append(CGPoint(x: x, y: y))
-            rowHeight = max(rowHeight, size.height)
-            x += size.width + spacing
-            maxX = max(maxX, x - spacing)
-        }
-
-        return (positions, CGSize(width: maxX, height: y + rowHeight))
+    private func startGeneration() {
+        previewPlayer.stop()
+        generator.generate(.seed(metadata), provider: settings.provider, count: settings.songCount)
     }
 }

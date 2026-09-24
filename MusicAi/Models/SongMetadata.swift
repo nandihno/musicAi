@@ -1,7 +1,7 @@
 import Foundation
 import MusicKit
 
-struct SongMetadata {
+nonisolated struct SongMetadata: Sendable {
     let title: String
     let artistName: String
     let albumTitle: String?
@@ -24,7 +24,8 @@ struct SongMetadata {
         self.artwork = song.artwork
     }
 
-    func claudeContext(songCount: Int = 15) -> String {
+    /// Describes the seed song for the AI. Count and exclusion rules are added by `PlaylistPrompt`.
+    func promptContext() -> String {
         var lines: [String] = []
 
         lines.append("Seed song: \"\(title)\" by \(artistName)")
@@ -55,9 +56,6 @@ struct SongMetadata {
             let relative = formatter.localizedString(for: last, relativeTo: Date())
             lines.append("Last played: \(relative)")
         }
-
-        lines.append("Generate \(songCount) songs with a similar vibe, genre, and energy.")
-        lines.append("Do NOT include the seed song itself in the results.")
 
         return lines.joined(separator: "\n")
     }

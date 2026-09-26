@@ -1,7 +1,7 @@
 import Foundation
 import MusicKit
 
-nonisolated struct SongMetadata: Sendable {
+nonisolated struct SongMetadata: Codable, Sendable {
     let title: String
     let artistName: String
     let albumTitle: String?

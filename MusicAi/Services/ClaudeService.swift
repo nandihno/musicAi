@@ -48,18 +48,14 @@ nonisolated struct ClaudeService: PlaylistProvider {
 
     var displayName: String { "Claude" }
 
-    func streamSongs(
-        for prompt: PlaylistPrompt,
-        count: Int,
-        excluding: [SongItem]
-    ) -> AsyncThrowingStream<SongItem, Error> {
+    func streamSongs(for request: PlaylistRequest) -> AsyncThrowingStream<SongItem, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     try await stream(
-                        system: systemPrompt(for: prompt),
-                        user: prompt.userMessage(count: count, excluding: excluding),
-                        maxTokens: max(1024, count * 120 + 512)
+                        system: systemPrompt(for: request.prompt),
+                        user: request.userMessage,
+                        maxTokens: max(1024, request.count * 120 + 512)
                     ) { continuation.yield($0) }
                     continuation.finish()
                 } catch {
@@ -130,6 +126,25 @@ nonisolated struct ClaudeService: PlaylistProvider {
             - If the seed has multiple genres (e.g. Latin + Jazz), honour that fusion
             - If the user has high play count, they know this genre deeply — \
               go deeper and more authentic, not mainstream
+            \(Self.outputFormat)
+            """
+        case .blend:
+            """
+            You are a world-class music curator and DJ with deep knowledge of global \
+            music genres, cross-cultural fusions, and music history.
+            The user will describe several seed songs from their library. Build a \
+            mash-up playlist that blends them:
+            - Include songs close to each seed's genre, mood, and era
+            - Include bridge songs that combine elements of several seeds \
+              (e.g. a Latin jazz seed and a trip-hop seed suggest downtempo Latin electronica)
+            - Balance the playlist across all seeds; don't let one seed dominate
+            - Every song must genuinely exist on Apple Music — no invented songs
+            Rules:
+            - Return ONLY a valid JSON array, no markdown, no explanation
+            - Each object must have exactly: "title", "artist", "album", "genre", "reason"
+            - "reason" is one sentence (max 15 words) naming which seed(s) it connects to and why
+            - Never include any seed song itself
+            - Never repeat the same artist more than twice
             \(Self.outputFormat)
             """
         }

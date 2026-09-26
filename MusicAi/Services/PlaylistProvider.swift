@@ -6,11 +6,7 @@ nonisolated protocol PlaylistProvider: Sendable {
     /// Shown in status messages, e.g. "Asking Claude…".
     var displayName: String { get }
 
-    func streamSongs(
-        for prompt: PlaylistPrompt,
-        count: Int,
-        excluding: [SongItem]
-    ) -> AsyncThrowingStream<SongItem, Error>
+    func streamSongs(for request: PlaylistRequest) -> AsyncThrowingStream<SongItem, Error>
 }
 
 /// Pulls complete top-level JSON objects out of a JSON array that arrives in

@@ -69,17 +69,19 @@ actor MusicKitService {
     }
 
     func fetchSongs(from playlist: Playlist) async throws -> [Song] {
+        // `genreNames` (used in prompts) comes with library songs, so there's no
+        // need for a per-song `.with([.genres])` round trip here.
         let detailed = try await playlist.with([.tracks])
-        guard let tracks = detailed.tracks else { return [] }
-        var songs: [Song] = []
-        for track in tracks {
-            if case let .song(song) = track {
-                // Fetch additional properties for metadata
-                let enriched = try await song.with([.genres])
-                songs.append(enriched)
-            }
-        }
-        return songs
+        return detailed.tracks?.compactMap { track in
+            if case .song(let song) = track { song } else { nil }
+        } ?? []
+    }
+
+    func searchLibrarySongs(term: String) async throws -> [Song] {
+        try await requestAuthorization()
+        var request = MusicLibrarySearchRequest(term: term, types: [Song.self])
+        request.limit = 25
+        return Array(try await request.response().songs)
     }
 
     /// Returns a catalog song only when both title and artist match. Earlier versions
@@ -99,6 +101,15 @@ actor MusicKitService {
         // (e.g. "Stan Getz & João Gilberto"). Search the title alone, still requiring the artist.
         let byTitle = try await searchCatalog(term: title, limit: 15)
         return bestMatch(in: byTitle, title: wantedTitle, artist: wantedArtist)
+    }
+
+    /// Looks songs up directly by catalog ID (used when reopening History).
+    @concurrent
+    nonisolated static func fetchCatalogSongs(ids: [String]) async throws -> [String: Song] {
+        guard !ids.isEmpty else { return [:] }
+        let request = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: ids.map { MusicItemID($0) })
+        let response = try await request.response()
+        return Dictionary(response.items.map { ($0.id.rawValue, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     private nonisolated static func searchCatalog(term: String, limit: Int) async throws -> MusicItemCollection<Song> {

@@ -53,15 +53,11 @@ nonisolated struct FoundationModelsService: PlaylistProvider {
         }
     }
 
-    func streamSongs(
-        for prompt: PlaylistPrompt,
-        count: Int,
-        excluding: [SongItem]
-    ) -> AsyncThrowingStream<SongItem, Error> {
+    func streamSongs(for request: PlaylistRequest) -> AsyncThrowingStream<SongItem, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await stream(prompt: prompt, count: count, excluding: excluding) {
+                    try await stream(request) {
                         continuation.yield($0)
                     }
                     continuation.finish()
@@ -77,19 +73,14 @@ nonisolated struct FoundationModelsService: PlaylistProvider {
         }
     }
 
-    private func stream(
-        prompt: PlaylistPrompt,
-        count: Int,
-        excluding: [SongItem],
-        onSong: (SongItem) -> Void
-    ) async throws {
+    private func stream(_ request: PlaylistRequest, onSong: (SongItem) -> Void) async throws {
         if let reason = Self.unavailabilityReason() {
             throw FMError.unavailable(reason)
         }
 
-        let session = LanguageModelSession(instructions: instructions(for: prompt))
+        let session = LanguageModelSession(instructions: instructions(for: request.prompt))
         let responseStream = session.streamResponse(
-            to: prompt.userMessage(count: count, excluding: excluding),
+            to: request.userMessage,
             generating: GeneratedPlaylist.self
         )
 
@@ -130,6 +121,15 @@ nonisolated struct FoundationModelsService: PlaylistProvider {
             similar genre, mood, or musical energy, would feel natural alongside \
             the seed song, and genuinely exist on Apple Music. DO NOT include the \
             seed song itself. Never repeat the same artist more than twice.
+            """
+        case .blend:
+            """
+            You are a world-class music curator. The user will describe several \
+            seed songs from their library. Generate a mash-up playlist that blends \
+            them: some songs close to each seed, and some that bridge their styles. \
+            Balance the playlist across all seeds. Every song must genuinely exist \
+            on Apple Music. DO NOT include any seed song. Never repeat the same \
+            artist more than twice.
             """
         }
     }

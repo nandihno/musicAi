@@ -1,105 +1,172 @@
 import SwiftUI
 import MusicKit
 
+/// Pick up to five seed songs (from playlists, a library search, or whatever's
+/// playing) and blend them into one playlist.
 struct MashUpView: View {
-    @Environment(SettingsManager.self) private var settings
-
-    @State private var playlists: [Playlist] = []
-    @State private var isLoadingPlaylists = true
-    @State private var errorMessage: String?
-
-    private let musicKitService = MusicKitService()
+    @State private var selection = SeedSelection()
+    @State private var searchText = ""
+    @State private var showMashUp = false
 
     var body: some View {
         NavigationStack {
             Group {
-                if isLoadingPlaylists && playlists.isEmpty {
-                    ProgressView("Loading playlists...")
-                } else if let errorMessage, playlists.isEmpty {
-                    ContentUnavailableView {
-                        Label("Couldn't Load Playlists", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text(errorMessage)
-                    } actions: {
-                        Button("Try Again") {
-                            Task { await loadPlaylists() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.gradientStart)
-                    }
-                } else if playlists.isEmpty {
-                    ContentUnavailableView(
-                        "No Playlists",
-                        systemImage: "music.note.list",
-                        description: Text("Add playlists to your Apple Music library to get started.")
-                    )
+                if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                    PlaylistBrowser()
                 } else {
-                    playlistList
+                    LibrarySearchResults(term: searchText)
                 }
             }
             .appBackground()
             .navigationTitle("Mash Up")
+            .searchable(text: $searchText, prompt: "Search songs in your library")
             .settingsToolbar()
-            .task { await loadPlaylists() }
-            .refreshable { await loadPlaylists() }
-            .safeAreaInset(edge: .top) {
-                // A refresh failure while playlists are already showing.
-                if let errorMessage, !playlists.isEmpty {
-                    ErrorBanner(message: errorMessage) {
-                        Task { await loadPlaylists() }
-                    }
-                    .padding(.horizontal)
+            .navigationDestination(for: Playlist.self) { playlist in
+                PlaylistSongsView(playlist: playlist)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if !selection.isEmpty {
+                    SeedTray { showMashUp = true }
+                        .padding(.horizontal)
+                        .padding(.bottom, 4)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            .animation(.snappy, value: selection.songs.count)
+            .sheet(isPresented: $showMashUp) {
+                MashUpSheet(seeds: selection.songs)
+            }
         }
+        .environment(selection)
+    }
+}
+
+// MARK: - Playlists + Now Playing
+
+private struct PlaylistBrowser: View {
+    @Environment(SeedSelection.self) private var selection
+
+    @State private var playlists: [Playlist] = []
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    @State private var nowPlayingMessage: String?
+    @State private var isAddingNowPlaying = false
+
+    private let musicKitService = MusicKitService()
+
+    var body: some View {
+        List {
+            Section {
+                nowPlayingRow
+            } footer: {
+                Text("Pick up to \(SeedSelection.maxSeeds) songs from your playlists or search, then mash them up.")
+            }
+
+            Section("Your Playlists") {
+                playlistRows
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .task { await loadPlaylists() }
+        .refreshable { await loadPlaylists() }
     }
 
-    private var playlistList: some View {
-        List(playlists) { playlist in
-            NavigationLink(value: playlist) {
-                HStack(spacing: 12) {
-                    if let artwork = playlist.artwork {
-                        ArtworkImage(artwork, width: 50, height: 50)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    } else {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(.quaternary)
-                            .frame(width: 50, height: 50)
-                            .overlay {
-                                Image(systemName: "music.note.list")
-                                    .foregroundStyle(.secondary)
-                            }
-                    }
-                    Text(playlist.name)
+    private var nowPlayingRow: some View {
+        Button {
+            Task { await addNowPlaying() }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "play.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(Theme.accentGradient)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Add what's playing now")
                         .font(.body.weight(.semibold))
-                        .lineLimit(1)
+                    if let nowPlayingMessage {
+                        Text(nowPlayingMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .padding(.vertical, 4)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(playlist.name)
+                Spacer()
+                if isAddingNowPlaying {
+                    ProgressView()
+                }
             }
-            .listRowBackground(Theme.gradientStart.opacity(0.06))
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .navigationDestination(for: Playlist.self) { playlist in
-            PlaylistSongsView(playlist: playlist)
+        .tint(.primary)
+        .disabled(isAddingNowPlaying)
+    }
+
+    @ViewBuilder
+    private var playlistRows: some View {
+        if isLoading && playlists.isEmpty {
+            HStack {
+                ProgressView()
+                Text("Loading playlists\u{2026}")
+                    .foregroundStyle(.secondary)
+            }
+        } else if let errorMessage, playlists.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Couldn't load playlists", systemImage: "exclamationmark.triangle")
+                    .font(.subheadline.weight(.semibold))
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Try Again") {
+                    Task { await loadPlaylists() }
+                }
+                .buttonStyle(.bordered)
+            }
+        } else if playlists.isEmpty {
+            Text("Add playlists to your Apple Music library, or search for songs above.")
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(playlists) { playlist in
+                NavigationLink(value: playlist) {
+                    HStack(spacing: 12) {
+                        ArtworkThumbnail(artwork: playlist.artwork, size: 50, placeholder: "music.note.list")
+                        Text(playlist.name)
+                            .font(.body.weight(.semibold))
+                            .lineLimit(1)
+                    }
+                    .padding(.vertical, 2)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(playlist.name)
+                }
+            }
         }
     }
 
     private func loadPlaylists() async {
-        isLoadingPlaylists = true
+        isLoading = true
         errorMessage = nil
         do {
             playlists = try await musicKitService.fetchUserPlaylists()
         } catch {
             errorMessage = error.localizedDescription
         }
-        isLoadingPlaylists = false
+        isLoading = false
+    }
+
+    private func addNowPlaying() async {
+        isAddingNowPlaying = true
+        defer { isAddingNowPlaying = false }
+        do {
+            let (song, result) = try await selection.addNowPlaying()
+            nowPlayingMessage = switch result {
+            case .added: "Added \u{201C}\(song.title)\u{201D}"
+            case .alreadyAdded: "\u{201C}\(song.title)\u{201D} is already in your mash-up"
+            case .full: "You can mash up to \(SeedSelection.maxSeeds) songs"
+            }
+        } catch {
+            nowPlayingMessage = error.localizedDescription
+        }
     }
 }
 
-// MARK: - Song List for a Playlist
+// MARK: - Playlist Songs
 
 struct PlaylistSongsView: View {
     let playlist: Playlist
@@ -107,7 +174,6 @@ struct PlaylistSongsView: View {
     @State private var songs: [Song] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
-    @State private var selectedSong: Song?
 
     private let musicKitService = MusicKitService()
 
@@ -134,59 +200,16 @@ struct PlaylistSongsView: View {
                     description: Text("This playlist has no songs.")
                 )
             } else {
-                songList
+                List(songs) { song in
+                    SelectableSongRow(song: song)
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
             }
         }
         .appBackground()
         .navigationTitle(playlist.name)
         .task { await loadSongs() }
-        .sheet(item: $selectedSong) { song in
-            SongDetailSheet(song: song)
-        }
-    }
-
-    private var songList: some View {
-        List(songs) { song in
-            Button {
-                selectedSong = song
-            } label: {
-                HStack(spacing: 12) {
-                    if let artwork = song.artwork {
-                        ArtworkImage(artwork, width: 44, height: 44)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    } else {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(.quaternary)
-                            .frame(width: 44, height: 44)
-                            .overlay {
-                                Image(systemName: "music.note")
-                                    .foregroundStyle(.secondary)
-                            }
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(song.title)
-                            .font(.subheadline.weight(.medium))
-                            .lineLimit(1)
-                        Text(song.artistName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 2)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(song.title) by \(song.artistName)")
-            }
-            .accessibilityHint("Opens options to generate a playlist from this song")
-            .tint(.primary)
-            .listRowBackground(Theme.gradientStart.opacity(0.06))
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
     }
 
     private func loadSongs() async {
@@ -202,153 +225,212 @@ struct PlaylistSongsView: View {
     }
 }
 
-// MARK: - Song Detail Sheet
+// MARK: - Library Search
 
-struct SongDetailSheet: View {
-    @Environment(SettingsManager.self) private var settings
-    @Environment(\.dismiss) private var dismiss
+private struct LibrarySearchResults: View {
+    let term: String
 
-    let song: Song
+    @State private var songs: [Song] = []
+    @State private var isSearching = false
+    @State private var errorMessage: String?
 
-    @State private var generator = PlaylistGenerator()
-    @State private var previewPlayer = PreviewPlayer()
-    @State private var metadata: SongMetadata
-
-    init(song: Song) {
-        self.song = song
-        _metadata = State(initialValue: SongMetadata(from: song))
-    }
+    private let musicKitService = MusicKitService()
 
     var body: some View {
-        NavigationStack {
-            List {
-                songInfoSection
-                    .cardRow()
-                generateSection
-                    .cardRow()
-                GenerationFeedbackRows(generator: generator)
-                GeneratedPlaylistSection(generator: generator, previewPlayer: previewPlayer)
-            }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .appBackground()
-            .navigationTitle("Seed Song")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+        Group {
+            if let errorMessage {
+                ContentUnavailableView(
+                    "Search Failed",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(errorMessage)
+                )
+            } else if songs.isEmpty && !isSearching {
+                ContentUnavailableView.search(text: term)
+            } else {
+                List(songs) { song in
+                    SelectableSongRow(song: song)
                 }
-                if generator.canEdit {
-                    ToolbarItem(placement: .primaryAction) {
-                        EditButton()
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .overlay(alignment: .top) {
+                    if isSearching && songs.isEmpty {
+                        ProgressView().padding()
                     }
                 }
             }
-            .generatorFeedback(generator)
-            // Closing the sheet mid-run shouldn't leave work running in the background.
-            .onDisappear {
-                generator.cancel()
-                previewPlayer.stop()
+        }
+        // Restarts (and cancels the previous search) whenever the term changes.
+        .task(id: term) {
+            do {
+                try await Task.sleep(for: .milliseconds(300))  // debounce typing
+            } catch {
+                return
             }
+            await search()
         }
     }
 
-    // MARK: - Song Info
+    private func search() async {
+        isSearching = true
+        errorMessage = nil
+        defer { isSearching = false }
+        do {
+            let results = try await musicKitService.searchLibrarySongs(term: term)
+            guard !Task.isCancelled else { return }
+            songs = results
+        } catch where !Task.isCancelled {
+            errorMessage = error.localizedDescription
+        } catch {}
+    }
+}
 
-    private var songInfoSection: some View {
-        VStack(spacing: 16) {
-            if let artwork = song.artwork {
-                ArtworkImage(artwork, width: 200, height: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .shadow(radius: 8, y: 4)
-                    .accessibilityHidden(true)
-            }
+// MARK: - Selectable Row
 
-            VStack(spacing: 4) {
-                Text(song.title)
-                    .font(.title2.weight(.bold))
-                    .multilineTextAlignment(.center)
-                Text(song.artistName)
+/// A library song that can be added to (or removed from) the mash-up.
+struct SelectableSongRow: View {
+    @Environment(SeedSelection.self) private var selection
+    let song: Song
+
+    private var isSelected: Bool { selection.contains(song) }
+    private var canAdd: Bool { isSelected || !selection.isFull }
+
+    var body: some View {
+        Button {
+            selection.toggle(song)
+        } label: {
+            HStack(spacing: 12) {
+                ArtworkThumbnail(artwork: song.artwork, size: 44, placeholder: "music.note")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(song.title)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                    Text(song.artistName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "plus.circle")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
-                if let album = song.albumTitle {
-                    Text(album)
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
+                    .foregroundStyle(isSelected ? AnyShapeStyle(Theme.gradientStart) : AnyShapeStyle(.tertiary))
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canAdd)
+        .opacity(canAdd ? 1 : 0.5)
+        .listRowBackground(Theme.gradientStart.opacity(isSelected ? 0.14 : 0.06))
+        .sensoryFeedback(.selection, trigger: isSelected)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(song.title) by \(song.artistName)")
+        .accessibilityValue(isSelected ? "In mash-up" : "")
+        .accessibilityHint(
+            isSelected ? "Removes it from the mash-up"
+                : canAdd ? "Adds it to the mash-up"
+                : "The mash-up already has \(SeedSelection.maxSeeds) songs"
+        )
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+// MARK: - Seed Tray
+
+/// Floating tray showing the picked songs and the button to mash them up.
+private struct SeedTray: View {
+    @Environment(SeedSelection.self) private var selection
+    let mashUp: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(selection.songs) { song in
+                        seedChip(song)
+                    }
                 }
             }
 
-            metadataBadges
+            HStack {
+                Text("\(selection.songs.count)/\(SeedSelection.maxSeeds) songs")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Button("Clear", role: .destructive) {
+                    selection.clear()
+                }
+                .font(.caption.weight(.semibold))
+                Spacer()
+                Button(action: mashUp) {
+                    Label(
+                        selection.songs.count == 1 ? "Generate from 1 song" : "Mash Up \(selection.songs.count) songs",
+                        systemImage: "wand.and.stars"
+                    )
+                    .labelStyle(.titleAndIcon)
+                    .fontWeight(.semibold)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.gradientStart)
+            }
         }
-        .frame(maxWidth: .infinity)
+        .padding(12)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 22))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22)
+                .strokeBorder(Theme.gradientStart.opacity(0.25), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
     }
 
-    private var metadataBadges: some View {
-        let meta = metadata
-        let meaningfulGenres = meta.genreNames.filter { $0.lowercased() != "music" }
-        let playCountText: String? = meta.playCount.flatMap { $0 > 0 ? "\($0) plays" : nil }
-        let yearText: String? = meta.releaseDate.map { "\(Calendar.current.component(.year, from: $0))" }
-        let lastPlayedText: String? = meta.lastPlayedDate.map {
-            "Last: \($0.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)))"
+    private func seedChip(_ song: Song) -> some View {
+        HStack(spacing: 6) {
+            ArtworkThumbnail(artwork: song.artwork, size: 28, placeholder: "music.note")
+            Text(song.title)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+                .frame(maxWidth: 110, alignment: .leading)
+            Button {
+                selection.remove(song)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(song.title)")
         }
-
-        return FlowLayout(spacing: 8) {
-            ForEach(meaningfulGenres, id: \.self) { genre in
-                badge(genre, icon: "guitars")
-            }
-            if let text = playCountText {
-                badge(text, icon: "play.fill")
-            }
-            if let text = yearText {
-                badge(text, icon: "calendar")
-            }
-            if let text = lastPlayedText {
-                badge(text, icon: "clock")
-            }
-        }
-    }
-
-    private func badge(_ text: String, icon: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.caption2)
-            Text(text)
-                .font(.caption.weight(.bold))
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Theme.accentGradient)
+        .padding(.leading, 4)
+        .padding(.trailing, 8)
+        .padding(.vertical, 4)
+        .background(Theme.gradientStart.opacity(0.12))
         .clipShape(Capsule())
     }
+}
 
-    // MARK: - Generate
+// MARK: - Artwork
 
-    private var generateSection: some View {
-        @Bindable var settings = settings
+struct ArtworkThumbnail: View {
+    let artwork: Artwork?
+    let size: CGFloat
+    let placeholder: String
 
-        return VStack(spacing: 8) {
-            HStack {
-                Text("Playlist length")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                SongCountPicker(count: $settings.songCount)
-                    .disabled(generator.isBusy)
+    var body: some View {
+        Group {
+            if let artwork {
+                ArtworkImage(artwork, width: size, height: size)
+            } else {
+                Rectangle()
+                    .fill(.quaternary)
+                    .overlay {
+                        Image(systemName: placeholder)
+                            .font(.system(size: size * 0.4))
+                            .foregroundStyle(.secondary)
+                    }
             }
-
-            GenerateButton(
-                title: generator.hasResults ? "Generate Again" : "Generate from this song",
-                systemImage: "wand.and.stars",
-                isGenerating: generator.activity == .generating,
-                isDisabled: generator.isBusy,
-                generate: startGeneration,
-                cancel: generator.cancel
-            )
         }
-    }
-
-    private func startGeneration() {
-        previewPlayer.stop()
-        generator.generate(.seed(metadata), provider: settings.provider, count: settings.songCount)
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.18))
+        .accessibilityHidden(true)
     }
 }

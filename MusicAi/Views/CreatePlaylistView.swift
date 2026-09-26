@@ -1,8 +1,10 @@
 import SwiftUI
 import MusicKit
+import SwiftData
 
 struct CreatePlaylistView: View {
     @Environment(SettingsManager.self) private var settings
+    @Environment(\.modelContext) private var modelContext
 
     @State private var theme = ""
     @State private var generator = PlaylistGenerator()
@@ -51,6 +53,7 @@ struct CreatePlaylistView: View {
             }
             .settingsToolbar()
             .generatorFeedback(generator)
+            .onAppear { generator.attachHistory(modelContext) }
         }
     }
 

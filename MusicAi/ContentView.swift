@@ -10,6 +10,10 @@ struct ContentView: View {
             Tab("Mash Up", systemImage: "wand.and.stars") {
                 MashUpView()
             }
+
+            Tab("History", systemImage: "clock.arrow.circlepath") {
+                HistoryView()
+            }
         }
         .tint(Theme.gradientStart)
     }

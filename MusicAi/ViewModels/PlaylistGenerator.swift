@@ -1,6 +1,7 @@
 import Foundation
 import MusicKit
 import Observation
+import SwiftData
 import SwiftUI  // Array.move(fromOffsets:toOffset:) / remove(atOffsets:)
 
 /// Drives one generate → review → save session. Songs stream in from the AI
@@ -10,8 +11,10 @@ import SwiftUI  // Array.move(fromOffsets:toOffset:) / remove(atOffsets:)
 final class PlaylistGenerator {
     enum Activity: Equatable {
         case generating
+        case refining
         case replacing
         case rechecking
+        case restoring
         case saving
     }
 
@@ -21,6 +24,10 @@ final class PlaylistGenerator {
     private(set) var errorMessage: String?
     private(set) var providerName = ""
     private(set) var requestedCount = 0
+    /// Follow-up instructions applied to this playlist, oldest first.
+    private(set) var refinements: [String] = []
+    /// Set when reopened from History and that version was saved before.
+    private(set) var previouslySavedAt: Date?
 
     /// Editable before saving.
     var playlistName = ""
@@ -32,6 +39,8 @@ final class PlaylistGenerator {
     @ObservationIgnored private var prompt: PlaylistPrompt?
     @ObservationIgnored private var provider: (any PlaylistProvider)?
     @ObservationIgnored private var lastSearchError: Error?
+    @ObservationIgnored private var history: HistoryStore?
+    @ObservationIgnored private var historyID: PersistentIdentifier?
 
     private let musicKitService = MusicKitService()
 
@@ -47,6 +56,8 @@ final class PlaylistGenerator {
     var failedSearchCount: Int { tracks.filter(\.searchFailed).count }
     var pendingCount: Int { tracks.filter(\.isPending).count }
     var canRetry: Bool { retryAction != nil && !isBusy }
+    /// Refining is allowed after saving too; it starts a new, unsaved version.
+    var canRefine: Bool { hasResults && !isBusy && prompt != nil }
 
     var statusMessage: String {
         switch activity {
@@ -60,6 +71,16 @@ final class PlaylistGenerator {
             } else {
                 "Finishing up\u{2026}"
             }
+        case .refining:
+            if tracks.isEmpty {
+                "Refining with \(providerName)\u{2026}"
+            } else if tracks.count < requestedCount {
+                "Refining with \(providerName)\u{2026} \(tracks.count)/\(requestedCount)"
+            } else {
+                "Matching on Apple Music\u{2026}"
+            }
+        case .restoring:
+            "Loading from Apple Music\u{2026}"
         case .replacing:
             "Finding replacements\u{2026}"
         case .rechecking:
@@ -69,6 +90,85 @@ final class PlaylistGenerator {
         case nil:
             ""
         }
+    }
+
+    // MARK: - History
+
+    /// Connects the generator to SwiftData. Call once from the owning view.
+    func attachHistory(_ context: ModelContext) {
+        guard history == nil else { return }
+        history = HistoryStore(context: context)
+    }
+
+    private func persistHistory(savedAt: Date? = nil) {
+        guard let history, let prompt, !tracks.isEmpty else { return }
+        historyID = history.upsert(id: historyID, snapshot: HistorySnapshot(
+            name: playlistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? prompt.defaultPlaylistName
+                : playlistName,
+            prompt: prompt,
+            refinements: refinements,
+            providerName: providerName,
+            tracks: tracks,
+            savedAt: savedAt
+        ))
+    }
+
+    /// Reopens a History entry for review, refining, or saving again. Matched songs
+    /// are re-fetched by catalog ID; anything unconfirmed is searched again.
+    func restore(_ entry: PlaylistHistoryEntry, provider: any PlaylistProvider) {
+        guard !isBusy, let prompt = entry.prompt else { return }
+        self.prompt = prompt
+        self.provider = provider
+        historyID = entry.persistentModelID
+        providerName = provider.displayName
+        playlistName = entry.name
+        refinements = entry.refinements
+        previouslySavedAt = entry.savedAt
+        savedPlaylist = nil
+        clearError()
+
+        let stored = entry.orderedTracks.map { (item: $0.item, catalogID: $0.catalogID, status: $0.status) }
+        requestedCount = stored.count
+        tracks = stored.map { track in
+            GeneratedTrack(item: track.item, match: track.status == .notFound ? .notFound : .searching)
+        }
+
+        activity = .restoring
+        let ids = tracks.map(\.id)
+        task = Task { await runRestore(stored: stored, ids: ids) }
+    }
+
+    private func runRestore(stored: [(item: SongItem, catalogID: String?, status: HistoryTrack.Status)], ids: [UUID]) async {
+        defer {
+            activity = nil
+            task = nil
+        }
+
+        do {
+            try await musicKitService.requestAuthorization()
+        } catch {
+            fail(with: error, retry: nil)
+            return
+        }
+
+        let catalogIDs = stored.compactMap(\.catalogID)
+        let songsByID = (try? await MusicKitService.fetchCatalogSongs(ids: catalogIDs)) ?? [:]
+
+        await withTaskGroup(of: Void.self) { group in
+            for (index, track) in stored.enumerated() where track.status != .notFound {
+                let id = ids[index]
+                if let catalogID = track.catalogID, let song = songsByID[catalogID] {
+                    applyMatch(.found(song), to: id)
+                } else {
+                    // Not fetched by ID (or never matched), so search again.
+                    group.addTask { await self.search(track.item, for: id) }
+                }
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+        reportSearchFailures()
     }
 
     // MARK: - Generate
@@ -99,11 +199,17 @@ final class PlaylistGenerator {
         errorMessage = nil
         retryAction = nil
         playlistName = ""
+        refinements = []
+        previouslySavedAt = nil
+        historyID = nil
     }
 
     private func runGeneration(_ prompt: PlaylistPrompt, provider: any PlaylistProvider, count: Int) async {
         tracks = []
         savedPlaylist = nil
+        refinements = []
+        previouslySavedAt = nil
+        historyID = nil  // a fresh generation is a new History entry
         clearError()
         providerName = provider.displayName
         requestedCount = count
@@ -118,7 +224,7 @@ final class PlaylistGenerator {
             try await musicKitService.requestAuthorization()
 
             try await streamAndMatch(
-                provider.streamSongs(for: prompt, count: count, excluding: []),
+                provider.streamSongs(for: PlaylistRequest(prompt: prompt, count: count)),
                 prompt: prompt,
                 limit: count
             ) { track in
@@ -131,6 +237,7 @@ final class PlaylistGenerator {
                 throw GeneratorError.noSongs
             }
             reportSearchFailures()
+            persistHistory()
         } catch let error where error.isCancellation || Task.isCancelled {
             tracks = []
         } catch {
@@ -145,16 +252,102 @@ final class PlaylistGenerator {
     func remove(atOffsets offsets: IndexSet) {
         guard canEdit else { return }
         tracks.remove(atOffsets: offsets)
+        persistHistory()
     }
 
     func remove(_ track: GeneratedTrack) {
         guard canEdit else { return }
         tracks.removeAll { $0.id == track.id }
+        persistHistory()
     }
 
     func move(fromOffsets source: IndexSet, toOffset destination: Int) {
         guard canEdit else { return }
         tracks.move(fromOffsets: source, toOffset: destination)
+        persistHistory()
+    }
+
+    /// Call when the user finishes editing the playlist name.
+    func commitName() {
+        guard canEdit else { return }
+        persistHistory()
+    }
+
+    // MARK: - Refine
+
+    /// Asks the AI to revise the whole playlist ("more upbeat", "only 70s").
+    /// Songs it keeps reuse their existing Apple Music match instead of searching again.
+    func refine(_ instruction: String) {
+        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canRefine, !trimmed.isEmpty, let prompt, let provider else { return }
+        activity = .refining
+        task = Task { await runRefinement(trimmed, prompt: prompt, provider: provider) }
+    }
+
+    /// "More like this" for a single row.
+    func refine(moreLike track: GeneratedTrack) {
+        refine("Add more songs like \"\(track.item.title)\" by \(track.item.artist), and keep that song in the playlist.")
+    }
+
+    private func runRefinement(_ instruction: String, prompt: PlaylistPrompt, provider: any PlaylistProvider) async {
+        clearError()
+        let previousTracks = tracks
+        let previousSaved = savedPlaylist
+        let previousSavedAt = previouslySavedAt
+        let updatedRefinements = refinements + [instruction]
+        let knownMatches = Dictionary(
+            previousTracks.compactMap { track -> (String, GeneratedTrack.Match)? in
+                switch track.match {
+                case .found, .notFound: (track.item.dedupeKey, track.match)
+                default: nil
+                }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let count = max(requestedCount, previousTracks.count)
+
+        tracks = []
+        savedPlaylist = nil
+        previouslySavedAt = nil
+        providerName = provider.displayName
+
+        defer {
+            activity = nil
+            task = nil
+        }
+
+        do {
+            try await streamAndMatch(
+                provider.streamSongs(for: PlaylistRequest(
+                    prompt: prompt,
+                    count: count,
+                    refinements: updatedRefinements,
+                    current: previousTracks.map(\.item)
+                )),
+                prompt: prompt,
+                limit: count,
+                knownMatches: knownMatches
+            ) { track in
+                self.tracks.append(track)
+                return track.id
+            }
+            try Task.checkCancellation()
+
+            if tracks.isEmpty {
+                throw GeneratorError.noSongs
+            }
+            refinements = updatedRefinements
+            reportSearchFailures()
+            persistHistory()
+        } catch {
+            // Put the previous version back whether cancelled or failed.
+            tracks = previousTracks
+            savedPlaylist = previousSaved
+            previouslySavedAt = previousSavedAt
+            if !(error.isCancellation || Task.isCancelled) {
+                fail(with: error) { [weak self] in self?.refine(instruction) }
+            }
+        }
     }
 
     // MARK: - Replace
@@ -198,7 +391,12 @@ final class PlaylistGenerator {
 
         do {
             try await streamAndMatch(
-                provider.streamSongs(for: prompt, count: ids.count, excluding: tracks.map(\.item)),
+                provider.streamSongs(for: PlaylistRequest(
+                    prompt: prompt,
+                    count: ids.count,
+                    refinements: refinements,
+                    excluding: tracks.map(\.item)
+                )),
                 prompt: prompt,
                 limit: ids.count
             ) { newTrack in
@@ -209,6 +407,7 @@ final class PlaylistGenerator {
                 return newTrack.id
             }
             reportSearchFailures()
+            persistHistory()
         } catch let error where error.isCancellation || Task.isCancelled {
             // Leave the playlist as it was.
         } catch {
@@ -257,6 +456,7 @@ final class PlaylistGenerator {
             return
         }
         reportSearchFailures()
+        persistHistory()
     }
 
     // MARK: - Save
@@ -294,6 +494,7 @@ final class PlaylistGenerator {
                 description: prompt?.playlistDescription ?? "Generated by MusicAI",
                 songs: tracks.compactMap(\.song)
             )
+            persistHistory(savedAt: .now)
         } catch {
             fail(with: error) { [weak self] in self?.save() }
         }
@@ -308,6 +509,7 @@ final class PlaylistGenerator {
         _ stream: AsyncThrowingStream<SongItem, Error>,
         prompt: PlaylistPrompt,
         limit: Int,
+        knownMatches: [String: GeneratedTrack.Match] = [:],
         insert: (GeneratedTrack) -> UUID?
     ) async throws {
         var seen = Set(tracks.map(\.item.dedupeKey))
@@ -315,15 +517,18 @@ final class PlaylistGenerator {
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             for try await item in stream {
+                let known = knownMatches[item.dedupeKey]
                 guard accepted < limit,
                       !prompt.isSeed(item),
                       seen.insert(item.dedupeKey).inserted,
-                      let id = insert(GeneratedTrack(item: item)) else {
+                      let id = insert(GeneratedTrack(item: item, match: known ?? .searching)) else {
                     continue
                 }
                 accepted += 1
 
-                group.addTask { await self.search(item, for: id) }
+                if known == nil {
+                    group.addTask { await self.search(item, for: id) }
+                }
             }
             try await group.waitForAll()
         }

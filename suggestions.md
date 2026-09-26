@@ -225,8 +225,8 @@ Parallel song resolution · friendly errors + retry · Keychain · empty-state p
 **Phase 2 - Core UX (≈1 week)** ✅ *Done*
 Extract `PlaylistGenerator` + shared views · review-before-save with edit/reorder/rename · song count picker · preview playback + Open in Apple Music · replace unmatched songs · subscription check · streaming results.
 
-**Phase 3 - Differentiators**
-History (SwiftData) · conversational refinement · true multi-seed Mash Up + Now Playing seed · App Intents/Shortcuts · iPad split view · share cards & generated covers.
+**Phase 3 - Differentiators** 🚧 *In progress*
+✅ History (SwiftData) · ✅ conversational refinement · ✅ test target (Swift Testing) · ✅ multi-seed Mash Up (1–5 songs, library search, Now Playing seed) · App Intents/Shortcuts · iPad split view · share cards & generated covers.
 
 **Phase 4 - Regional availability**
 Over-generate + automatic backfill · artist top-song fallback ("Similar pick") · storefront hint in prompts · miss diagnostics / close-match state · (optional) Claude catalog-search tool. See §7.

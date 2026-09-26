@@ -41,6 +41,9 @@ struct GeneratedPlaylistSection: View {
                     reviewCard
                         .cardRow()
                 }
+
+                RefineCard(generator: generator)
+                    .cardRow()
             }
 
             Section {
@@ -75,6 +78,7 @@ struct GeneratedPlaylistSection: View {
                 TextField("Playlist name", text: $generator.playlistName)
                     .textFieldStyle(.roundedBorder)
                     .submitLabel(.done)
+                    .onSubmit { generator.commitName() }
                     .disabled(!generator.canEdit)
             }
 
@@ -105,6 +109,15 @@ struct GeneratedPlaylistSection: View {
             .buttonStyle(.borderedProminent)
             .tint(Theme.gradientStart)
             .disabled(!generator.canEdit || generator.matchedCount == 0)
+
+            if let savedAt = generator.previouslySavedAt {
+                Label(
+                    "Saved to Apple Music \(savedAt.formatted(.relative(presentation: .named))). Saving again creates a new copy.",
+                    systemImage: "checkmark.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
 
             Text("Tap a song to preview it. Swipe to remove or replace, or tap Edit to reorder.")
                 .font(.caption)
@@ -150,6 +163,13 @@ struct GeneratedPlaylistSection: View {
                     previewPlayer.playingID == track.id
                         ? Label("Stop Preview", systemImage: "stop.fill")
                         : Label("Play Preview", systemImage: "play.fill")
+                }
+            }
+            if generator.canRefine {
+                Button {
+                    generator.refine(moreLike: track)
+                } label: {
+                    Label("More Like This", systemImage: "plus.square.on.square")
                 }
             }
             if generator.canEdit {
@@ -258,5 +278,94 @@ struct SavedPlaylistCard: View {
         if let url = playlist.url ?? URL(string: "music://") {
             openURL(url)
         }
+    }
+}
+
+// MARK: - Refine Card
+
+/// Follow-up instructions ("more upbeat", "only 70s") that revise the whole playlist.
+struct RefineCard: View {
+    let generator: PlaylistGenerator
+
+    @State private var instruction = ""
+    @FocusState private var isFocused: Bool
+
+    private static let quickRefinements = [
+        "More upbeat",
+        "More chill",
+        "Less mainstream",
+        "More variety",
+        "Older songs",
+        "Newer songs"
+    ]
+
+    private var isRefining: Bool { generator.activity == .refining }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Refine", systemImage: "slider.horizontal.3")
+                .font(.subheadline.weight(.semibold))
+
+            FlowLayout(spacing: 8) {
+                ForEach(Self.quickRefinements, id: \.self) { suggestion in
+                    Button {
+                        submit(suggestion)
+                    } label: {
+                        Text(suggestion)
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Theme.gradientStart.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.gradientStart)
+                    .disabled(!generator.canRefine)
+                    .accessibilityHint("Revises the playlist")
+                }
+            }
+
+            HStack {
+                TextField("Or describe a change\u{2026}", text: $instruction)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isFocused)
+                    .submitLabel(.send)
+                    .onSubmit { submit(instruction) }
+                    .disabled(!generator.canRefine && !isRefining)
+
+                if isRefining {
+                    Button("Cancel", action: generator.cancel)
+                        .buttonStyle(.bordered)
+                } else {
+                    Button {
+                        submit(instruction)
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.title2)
+                    }
+                    .tint(Theme.gradientStart)
+                    .disabled(!generator.canRefine || instruction.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .accessibilityLabel("Refine playlist")
+                }
+            }
+
+            if !generator.refinements.isEmpty {
+                Text("Refined: \(generator.refinements.joined(separator: " \u{00B7} "))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+        }
+        .labelStyle(.titleAndIcon)
+        .padding()
+        .background(Theme.gradientStart.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func submit(_ text: String) {
+        guard generator.canRefine, !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        isFocused = false
+        generator.refine(text)
+        instruction = ""
     }
 }
